@@ -3,111 +3,175 @@ import sqlite3
 import threading
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
-
-# ---------- Flask dummy server ----------
-app_web = Flask(__name__)
-
-@app_web.route("/")
-def index():
-    return "Viral Music Bot is running! 🚀"
-
-def run_flask():
-    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-
-# ---------- Telegram Bot Code ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SONG_LINK = "https://mdundo.com/song/5321016"
-REWARD_TOP = 3
-
-conn = sqlite3.connect("referrals.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    referrer INTEGER,
-    referrals INTEGER DEFAULT 0
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
 )
-""")
-conn.commit()
 
-def add_user(user_id, username, referrer=None):
-    cursor.execute("INSERT OR IGNORE INTO users(user_id, username) VALUES(?, ?)", (user_id, username))
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+DB_FILE = "bot.db"
+
+SONGS = {
+    "song1": {
+        "title": "Tribute to Dear Mama",
+        "url": "https://youtu.be/gbprHnumaBM?si=R5ocaU_avNf7J4n2",
+        "answer": "mama"
+    },
+    "song2": {
+        "title": "Tribute to Nannies & Teachers",
+        "url": "https://youtu.be/L8hiNjTcvDY?si=8uOj46Cohj2bylzk",
+        "answer": "teachers"
+    }
+}
+
+# ---------- DATABASE ----------
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            reward_unlocked INTEGER DEFAULT 0,
+            shares_left INTEGER DEFAULT 0
+        )
+    """)
     conn.commit()
-    if referrer:
-        cursor.execute("SELECT referrer FROM users WHERE user_id=?", (user_id,))
-        if cursor.fetchone()[0] is None and referrer != user_id:
-            cursor.execute("UPDATE users SET referrer=? WHERE user_id=?", (referrer, user_id))
-            cursor.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (referrer,))
-            conn.commit()
-            return referrer
-    return None
+    conn.close()
 
-def get_leaderboard(top=10):
-    cursor.execute("SELECT username, referrals FROM users ORDER BY referrals DESC LIMIT ?", (top,))
-    return cursor.fetchall()
+def get_user(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    if not row:
+        c.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        row = (user_id, 0, 0)
+    conn.close()
+    return row
 
+def unlock_reward(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE users SET reward_unlocked=1, shares_left=20 WHERE user_id=?",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
+def reduce_share(user_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "UPDATE users SET shares_left = shares_left - 1 WHERE user_id=? AND shares_left > 0",
+        (user_id,)
+    )
+    conn.commit()
+    conn.close()
+
+# ---------- BOT HANDLERS ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    username = update.message.from_user.username or str(user_id)
-    args = context.args
-    referrer_id = int(args[0]) if args else None
-    add_user(user_id, username, referrer_id)
-    referral_link = f"https://t.me/{context.bot.username}?start={user_id}"
+    user_id = update.effective_user.id
+    get_user(user_id)
+
     keyboard = [
-        [InlineKeyboardButton("▶️ Listen / Download", url=SONG_LINK)],
-        [InlineKeyboardButton("📤 Share Song", switch_inline_query=SONG_LINK)],
-        [InlineKeyboardButton("🏆 My Referrals", callback_data="stats")],
-        [InlineKeyboardButton("🌟 Leaderboard", callback_data="leaderboard")]
+        [InlineKeyboardButton("🎧 Listen to Song 1", url=SONGS["song1"]["url"])],
+        [InlineKeyboardButton("🎧 Listen to Song 2", url=SONGS["song2"]["url"])],
+        [InlineKeyboardButton("✅ I listened – Take Quiz", callback_data="quiz")]
     ]
+
     await update.message.reply_text(
-        "🔥 *NEW VIRAL HIT SONG!* 🔥\\n🎧 Listen & download below\\n📢 Share with friends & groups\\n🏆 Top promoters get rewards!",
-        parse_mode="Markdown",
+        "🎶 Welcome!\n\n"
+        "Listen to ANY song below, then pass the quiz to unlock promotion rewards.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    await update.message.reply_text(f"🔗 *Your referral link:*\\n{referral_link}\\nShare this link everywhere!", parse_mode="Markdown")
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.callback_query.from_user.id
-    cursor.execute("SELECT referrals FROM users WHERE user_id=?", (user_id,))
-    count = cursor.fetchone()[0]
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(f"🏆 *Your Total Referrals:* {count}\\nKeep sharing!", parse_mode="Markdown")
+async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top_users = get_leaderboard(10)
-    text = "🌟 *Top 10 Promoters* 🌟\\n"
-    for idx, (username, referrals) in enumerate(top_users, start=1):
-        text += f"{idx}. @{username} - {referrals} referrals\\n"
-    await update.callback_query.answer()
-    await update.callback_query.message.reply_text(text, parse_mode="Markdown")
+    keyboard = [
+        [InlineKeyboardButton("Tribute to my Dear Mama ❤️", callback_data="q1_mama")],
+        [InlineKeyboardButton("Tribute to Nannies & Teachers 👩‍🏫", callback_data="q1_teachers")],
+        [InlineKeyboardButton("Just a Party Song 🎉", callback_data="wrong")]
+    ]
 
-async def reward_job(context: ContextTypes.DEFAULT_TYPE):
-    top_users = get_leaderboard(REWARD_TOP)
-    for idx, (username, referrals) in enumerate(top_users, start=1):
-        try:
-            user_id = cursor.execute("SELECT user_id FROM users WHERE username=?", (username,)).fetchone()[0]
-            await context.bot.send_message(chat_id=user_id, text=f"🎉 Congrats @{username}! You are currently #{idx} on the leaderboard with {referrals} referrals! Keep sharing to win rewards! 🏆")
-        except:
-            continue
+    await query.message.reply_text(
+        "🧠 Quiz Question:\n\n"
+        "What are the songs mainly about?",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-def main():
-    if not BOT_TOKEN:
-        print("Error: BOT_TOKEN not set!")
+async def quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data in ["q1_mama", "q1_teachers"]:
+        unlock_reward(user_id)
+        await query.message.reply_text(
+            "✅ Correct!\n\n"
+            "🎉 Reward unlocked!\n"
+            "You can now promote YOUR link to 20 people.\n\n"
+            "Use /promote <your_link>"
+        )
+    else:
+        await query.message.reply_text(
+            "❌ Incorrect.\nPlease listen again and retry the quiz."
+        )
+
+async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+
+    if user[1] == 0:
+        await update.message.reply_text(
+            "🔒 Reward not unlocked.\nListen to a song and pass the quiz first."
+        )
         return
 
-    # Start Flask server in a thread
+    if user[2] <= 0:
+        await update.message.reply_text("🚫 You have used all 20 promotions.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /promote https://yourlink.com")
+        return
+
+    reduce_share(user_id)
+    await update.message.reply_text(
+        f"📣 Promotion sent!\n\n"
+        f"🔗 {context.args[0]}\n"
+        f"Remaining shares: {user[2] - 1}"
+    )
+
+# ---------- FLASK KEEPALIVE ----------
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Viral Music Bot is running!"
+
+def run_flask():
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+# ---------- MAIN ----------
+def main():
+    init_db()
     threading.Thread(target=run_flask).start()
 
-    # Start Telegram Bot
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(stats, pattern="stats"))
-    app.add_handler(CallbackQueryHandler(leaderboard, pattern="leaderboard"))
-    job_queue = app.job_queue
-    job_queue.run_repeating(reward_job, interval=21600, first=10)
-    app.run_polling()
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("promote", promote))
+    app_bot.add_handler(CallbackQueryHandler(quiz, pattern="quiz"))
+    app_bot.add_handler(CallbackQueryHandler(quiz_answer))
+
+    app_bot.run_polling()
 
 if __name__ == "__main__":
     main()
