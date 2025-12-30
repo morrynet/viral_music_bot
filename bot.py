@@ -1,21 +1,35 @@
-
 import os
 import sqlite3
+import threading
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
+# ---------- Flask dummy server ----------
+app_web = Flask(__name__)
+
+@app_web.route("/")
+def index():
+    return "Viral Music Bot is running! 🚀"
+
+def run_flask():
+    app_web.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
+# ---------- Telegram Bot Code ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SONG_LINK = "https://mdundo.com/song/5321016"
 REWARD_TOP = 3
 
 conn = sqlite3.connect("referrals.db", check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute("""CREATE TABLE IF NOT EXISTS users (
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
     referrer INTEGER,
     referrals INTEGER DEFAULT 0
-)""")
+)
+""")
 conn.commit()
 
 def add_user(user_id, username, referrer=None):
@@ -48,24 +62,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🌟 Leaderboard", callback_data="leaderboard")]
     ]
     await update.message.reply_text(
-        "🔥 *NEW VIRAL HIT SONG!* 🔥\n🎧 Listen & download below\n📢 Share with friends & groups\n🏆 Top promoters get rewards!",
+        "🔥 *NEW VIRAL HIT SONG!* 🔥\\n🎧 Listen & download below\\n📢 Share with friends & groups\\n🏆 Top promoters get rewards!",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    await update.message.reply_text(f"🔗 *Your referral link:*\n{referral_link}\nShare this link everywhere!", parse_mode="Markdown")
+    await update.message.reply_text(f"🔗 *Your referral link:*\\n{referral_link}\\nShare this link everywhere!", parse_mode="Markdown")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.callback_query.from_user.id
     cursor.execute("SELECT referrals FROM users WHERE user_id=?", (user_id,))
     count = cursor.fetchone()[0]
     await update.callback_query.answer()
-    await update.callback_query.message.reply_text(f"🏆 *Your Total Referrals:* {count}\nKeep sharing!", parse_mode="Markdown")
+    await update.callback_query.message.reply_text(f"🏆 *Your Total Referrals:* {count}\\nKeep sharing!", parse_mode="Markdown")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top_users = get_leaderboard(10)
-    text = "🌟 *Top 10 Promoters* 🌟\n"
+    text = "🌟 *Top 10 Promoters* 🌟\\n"
     for idx, (username, referrals) in enumerate(top_users, start=1):
-        text += f"{idx}. @{username} - {referrals} referrals\n"
+        text += f"{idx}. @{username} - {referrals} referrals\\n"
     await update.callback_query.answer()
     await update.callback_query.message.reply_text(text, parse_mode="Markdown")
 
@@ -82,6 +96,11 @@ def main():
     if not BOT_TOKEN:
         print("Error: BOT_TOKEN not set!")
         return
+
+    # Start Flask server in a thread
+    threading.Thread(target=run_flask).start()
+
+    # Start Telegram Bot
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(stats, pattern="stats"))
