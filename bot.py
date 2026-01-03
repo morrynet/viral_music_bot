@@ -13,11 +13,16 @@ from telegram.ext import (
 
 # ---------------- CONFIG ----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_IDS = {123456789}  # replace with your Telegram user ID
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN environment variable is required.")
+
+# Replace with your actual Telegram user ID(s)
+ADMIN_IDS = {123456789}  # ←←← CHANGE THIS
 
 DB_FILE = "bot.db"
 COOLDOWN = 10  # seconds for anti-spam
-LAST_ACTION = {}  # anti-spam tracking
+LAST_ACTION = {}
+LAST_ACTION_LOCK = threading.Lock()
 
 SONGS = {
     "song1": {
@@ -83,10 +88,11 @@ def reduce_share(user_id):
 # ---------------- ANTI-SPAM ----------------
 def is_spamming(user_id):
     now = time.time()
-    last = LAST_ACTION.get(user_id, 0)
-    if now - last < COOLDOWN:
-        return True
-    LAST_ACTION[user_id] = now
+    with LAST_ACTION_LOCK:
+        last = LAST_ACTION.get(user_id, 0)
+        if now - last < COOLDOWN:
+            return True
+        LAST_ACTION[user_id] = now
     return False
 
 # ---------------- ADMIN CHECK ----------------
@@ -101,7 +107,8 @@ def home():
     return "Viral Music Bot is running!"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # ---------------- BOT HANDLERS ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -164,16 +171,20 @@ async def promote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user[1] == 0:
         await update.message.reply_text("🔒 Pass the quiz first to unlock rewards.")
         return
-    if user[2] <= 0:
+
+    current_shares = user[2]
+    if current_shares <= 0:
         await update.message.reply_text("🚫 You have used all 20 promotions.")
         return
+
     if not context.args:
         await update.message.reply_text("Usage: /promote <your_link>")
         return
 
     reduce_share(user_id)
+    new_shares = current_shares - 1
     await update.message.reply_text(
-        f"📣 Promotion sent!\n🔗 {context.args[0]}\nRemaining shares: {user[2]-1}"
+        f"📣 Promotion sent!\n🔗 {context.args[0]}\nRemaining shares: {new_shares}"
     )
 
 async def myreward(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -198,6 +209,9 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """)
     rows = c.fetchall()
     conn.close()
+    if not rows:
+        await update.message.reply_text("🏆 Leaderboard is empty.")
+        return
     text = "🏆 Leaderboard\n\n"
     for i, (uid, q, p) in enumerate(rows, 1):
         text += f"{i}. User {uid}\n   🎧 Quizzes: {q} | 📣 Promos: {p}\n"
@@ -218,12 +232,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT user_id FROM users")
     users = c.fetchall()
     conn.close()
+    sent = 0
     for (uid,) in users:
         try:
             await context.bot.send_message(uid, message)
-        except:
-            pass
-    await update.message.reply_text("✅ Broadcast sent.")
+            sent += 1
+        except Exception:
+            pass  # silently skip failed sends
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
 
 async def addreward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -232,13 +248,21 @@ async def addreward(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /addreward <user_id>")
         return
-    uid = int(context.args[0])
+    try:
+        uid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("⚠️ Invalid user ID.")
+        return
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("UPDATE users SET shares_left = shares_left + 20 WHERE user_id=?", (uid,))
+    updated = c.rowcount
     conn.commit()
     conn.close()
-    await update.message.reply_text(f"✅ Added 20 shares to user {uid}")
+    if updated:
+        await update.message.reply_text(f"✅ Added 20 shares to user {uid}")
+    else:
+        await update.message.reply_text("⚠️ User not found.")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -267,11 +291,10 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- MAIN ----------------
 def main():
-    if not BOT_TOKEN:
-        print("BOT_TOKEN missing")
-        return
     init_db()
-    threading.Thread(target=run_flask).start()
+    # Start Flask in background for keep-alive (e.g., on Render/Heroku)
+    threading.Thread(target=run_flask, daemon=True).start()
+
     app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # User commands
@@ -287,10 +310,11 @@ def main():
     app_bot.add_handler(CommandHandler("addreward", addreward))
     app_bot.add_handler(CommandHandler("stats", stats))
 
-    # Quiz
-    app_bot.add_handler(CallbackQueryHandler(quiz, pattern="quiz"))
-    app_bot.add_handler(CallbackQueryHandler(quiz_answer, pattern="q1_"))
+    # Quiz handlers
+    app_bot.add_handler(CallbackQueryHandler(quiz, pattern="^quiz$"))
+    app_bot.add_handler(CallbackQueryHandler(quiz_answer, pattern="^q1_"))
 
+    print("Bot is running...")
     app_bot.run_polling()
 
 if __name__ == "__main__":
