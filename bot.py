@@ -17,18 +17,18 @@ from telegram.error import TelegramError
 # ---------------- CONFIG ----------------
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is required.")
+    raise ValueError("BOT_TOKEN environment variable is required. Please set it in Render dashboard.")
 
-# Replace with your actual Telegram user ID(s)
-ADMIN_IDS = {123456789}  # ←←← CHANGE THIS TO YOUR REAL USER ID
+# Your Telegram user ID (Morris/Morrynet @MCAIGold)
+ADMIN_IDS = {8038790386}  # Morris's Telegram ID
 
 DB_FILE = "bot.db"
 COOLDOWN = 10  # seconds for anti-spam
 LAST_ACTION = {}
 LAST_ACTION_LOCK = threading.Lock()
 
-# Get the Render app URL for self-pinging
-RENDER_APP_URL = os.environ.get("RENDER_APP_URL", "https://your-app-name.onrender.com")
+# Your Render app URL
+RENDER_APP_URL = os.environ.get("RENDER_APP_URL", "https://viral-music-bot-2.onrender.com")
 
 SONGS = {
     "song1": {
@@ -788,9 +788,10 @@ def main():
     app_bot.add_handler(CallbackQueryHandler(quiz_answer, pattern="^q1_"))
 
     print("🚀 Bot is running with group broadcasting feature...")
-    print("🔧 Make sure to set BOT_TOKEN environment variable")
-    print("👥 Add this bot to groups and use /register_group to enable auto-broadcasts")
+    print("🔧 BOT_TOKEN environment variable is set")
+    print(f"👑 Admin ID: {ADMIN_IDS}")
     print(f"🌐 Render App URL: {RENDER_APP_URL}")
+    print("👥 Add this bot to groups and use /register_group to enable auto-broadcasts")
     print("🔄 Auto-ping system will keep bot alive every 10 minutes")
     
     app_bot.run_polling()
